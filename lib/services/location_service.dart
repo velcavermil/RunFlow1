@@ -7,38 +7,27 @@ class LocationService {
   LocationService._();
   static final LocationService instance = LocationService._();
 
-  // STREAM lokasi (dipakai UI)
+  // STREAM
   final StreamController<LatLng> _locationController =
       StreamController<LatLng>.broadcast();
   Stream<LatLng> get locationStream => _locationController.stream;
 
-  // STATE
   LatLng? _lastPoint;
   double _totalDistanceKm = 0;
   double get totalDistanceKm => _totalDistanceKm;
 
-  bool isMockMode = false;
-
   StreamSubscription<Position>? _gpsSub;
-  Timer? _mockTimer;
 
-  // ================= START =================
+  // START
   Future<void> start() async {
-    reset();
-
-    if (kIsWeb) {
-      isMockMode = true;
-      _startMock();
-    } else {
-      isMockMode = false;
-      await _startGPS();
-    }
+    stop();     // pastikan tidak ada stream lama
+    reset();    // reset distance dan lastPoint
+    await _startGPS();
   }
 
-  // ================= STOP =================
+  // STOP
   void stop() {
     _gpsSub?.cancel();
-    _mockTimer?.cancel();
   }
 
   void reset() {
@@ -46,53 +35,59 @@ class LocationService {
     _totalDistanceKm = 0;
   }
 
-  // ================= MOBILE GPS =================
+  // START GPS
   Future<void> _startGPS() async {
-    final enabled = await Geolocator.isLocationServiceEnabled();
-    if (!enabled) throw Exception('GPS tidak aktif');
+    bool enabled = await Geolocator.isLocationServiceEnabled();
+    if (!enabled) throw Exception("GPS tidak aktif");
 
     LocationPermission permission = await Geolocator.checkPermission();
     if (permission == LocationPermission.denied) {
       permission = await Geolocator.requestPermission();
     }
 
-    if (permission == LocationPermission.denied ||
-        permission == LocationPermission.deniedForever) {
-      throw Exception('Izin lokasi ditolak');
+    if (permission == LocationPermission.deniedForever ||
+        permission == LocationPermission.denied) {
+      throw Exception("Izin lokasi ditolak");
     }
 
+    // Trigger GPS (Wajib di Web)
+    final pos = await Geolocator.getCurrentPosition(
+      desiredAccuracy: LocationAccuracy.best,
+    );
+
+    // kirim titik pertama TANPA FILTER
+    _processPoint(LatLng(pos.latitude, pos.longitude));
+
+    // Stream GPS
     _gpsSub = Geolocator.getPositionStream(
       locationSettings: const LocationSettings(
-        accuracy: LocationAccuracy.bestForNavigation,
-        distanceFilter: 5,
+        accuracy: LocationAccuracy.best,
+        distanceFilter: 1,
       ),
     ).listen((pos) {
-      if (pos.accuracy > 50) return;
+      if (!kIsWeb) {
+        if (pos.accuracy > 50) return;
+      }
 
       _processPoint(LatLng(pos.latitude, pos.longitude));
     });
   }
 
-  // ================= WEB MOCK =================
-  void _startMock() {
-    double lat = -7.95;
-    double lng = 112.61;
-
-    _mockTimer = Timer.periodic(const Duration(seconds: 2), (_) {
-      lat += 0.00005;
-      lng += 0.00005;
-      _processPoint(LatLng(lat, lng));
-    });
-  }
-
-  // ================= SHARED =================
+  // PROCESS POINT
   void _processPoint(LatLng current) {
-    if (_lastPoint != null) {
-      final meters = const Distance()(_lastPoint!, current);
-      if (meters > 3) {
-        _totalDistanceKm += meters / 1000;
-      }
+    // TITIK PERTAMA → SELALU DITERIMA
+    if (_lastPoint == null) {
+      _lastPoint = current;
+      _locationController.add(current);
+      return;
     }
+
+    final meters = const Distance()(_lastPoint!, current);
+
+    // Filter normal
+    if (meters < 1 || meters > 80) return;
+
+    _totalDistanceKm += meters / 1000;
 
     _lastPoint = current;
     _locationController.add(current);

@@ -2,9 +2,9 @@ import 'dart:async';
 
 import 'package:flutter/material.dart';
 import 'package:flutter_map/flutter_map.dart';
-import 'package:geolocator/geolocator.dart';
 import 'package:latlong2/latlong.dart';
 
+import '../services/location_service.dart';
 import '../models/run_model.dart';
 import '../services/run_storage.dart';
 
@@ -16,96 +16,63 @@ class RunScreen extends StatefulWidget {
 }
 
 class _RunScreenState extends State<RunScreen> {
-  late DateTime startTime;
+  MapController? _mapController;
+  StreamSubscription<LatLng>? _locationSub;
 
+  late DateTime startTime;
   Timer? _timer;
-  StreamSubscription<Position>? _positionStream;
 
   int elapsedSeconds = 0;
   bool isPaused = false;
 
   double distanceKm = 0.0;
-  LatLng? lastPosition;
   final List<LatLng> routePoints = [];
-
-  final distanceCalc = Distance();
 
   @override
   void initState() {
     super.initState();
-    startTime = DateTime.now();
-    startTimer();
-    startLocationTracking();
-  }
 
-  // ================= TIMER =================
-  void startTimer() {
-    _timer = Timer.periodic(const Duration(seconds: 1), (_) {
-      setState(() {
-        elapsedSeconds++;
-      });
+    _mapController = MapController();
+
+    startTime = DateTime.now();
+    _startTimer();
+
+    // GPS selalu bersih tiap masuk screen
+    LocationService.instance.stop();
+    LocationService.instance.start();
+
+    // LISTEN STREAM GPS
+    _locationSub = LocationService.instance.locationStream.listen((point) {
+      routePoints.add(point);
+      distanceKm = LocationService.instance.totalDistanceKm;
+
+      if (mounted && _mapController != null) {
+        _mapController!.move(point, _mapController!.zoom);
+        setState(() {});
+      }
     });
   }
 
-  // ================= GPS TRACKING =================
-  void startLocationTracking() async {
-  bool serviceEnabled = await Geolocator.isLocationServiceEnabled();
-  if (!serviceEnabled) return;
-
-  LocationPermission permission = await Geolocator.checkPermission();
-  if (permission == LocationPermission.denied) {
-    permission = await Geolocator.requestPermission();
+  void _startTimer() {
+    _timer = Timer.periodic(const Duration(seconds: 1), (_) {
+      if (mounted) {
+        setState(() => elapsedSeconds++);
+      }
+    });
   }
 
-  if (permission == LocationPermission.deniedForever) return;
-
-  _positionStream = Geolocator.getPositionStream(
-    locationSettings: const LocationSettings(
-      accuracy: LocationAccuracy.bestForNavigation,
-      distanceFilter: 5,
-    ),
-  ).listen((Position position) {
-    // ================= FILTER 1: AKURASI =================
-    if (position.accuracy > 20) return;
-
-    // ================= FILTER 2: KECEPATAN =================
-    if (position.speed < 0.5) return;
-
-    final current = LatLng(position.latitude, position.longitude);
-
-    if (lastPosition != null) {
-      final meters = distanceCalc(lastPosition!, current);
-
-      // ================= FILTER 3: JARAK MINIMUM =================
-      if (meters < 8) return;
-
-      distanceKm += meters / 1000;
-    }
-
-    lastPosition = current;
-    routePoints.add(current);
-
-    setState(() {});
-  });
-}
-
-
-  // ================= CONTROLS =================
   void pauseRun() {
     _timer?.cancel();
-    _positionStream?.pause();
     setState(() => isPaused = true);
   }
 
   void resumeRun() {
-    startTimer();
-    _positionStream?.resume();
+    _startTimer();
     setState(() => isPaused = false);
   }
 
   void stopRun() async {
     _timer?.cancel();
-    await _positionStream?.cancel();
 
     final run = RunModel(
       distance: distanceKm,
@@ -121,7 +88,8 @@ class _RunScreenState extends State<RunScreen> {
   @override
   void dispose() {
     _timer?.cancel();
-    _positionStream?.cancel();
+    _locationSub?.cancel();
+    LocationService.instance.stop();
     super.dispose();
   }
 
@@ -130,15 +98,20 @@ class _RunScreenState extends State<RunScreen> {
     final minutes = elapsedSeconds ~/ 60;
     final seconds = elapsedSeconds % 60;
 
+    if (_mapController == null) {
+      return const Scaffold(
+        body: Center(child: CircularProgressIndicator()),
+      );
+    }
+
     return Scaffold(
       body: Stack(
         children: [
-          // ================= MAP =================
+          // MAP
           FlutterMap(
+            mapController: _mapController!,
             options: MapOptions(
-              center: routePoints.isNotEmpty
-                  ? routePoints.last
-                  : LatLng(-7.95, 112.61),
+              center: const LatLng(-7.95, 112.61),
               zoom: 17,
             ),
             children: [
@@ -146,8 +119,9 @@ class _RunScreenState extends State<RunScreen> {
                 urlTemplate:
                     'https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png',
                 subdomains: const ['a', 'b', 'c'],
-                userAgentPackageName: 'com.example.running_tracker',
               ),
+
+              // ROUTE LINE
               PolylineLayer(
                 polylines: [
                   Polyline(
@@ -157,10 +131,29 @@ class _RunScreenState extends State<RunScreen> {
                   ),
                 ],
               ),
+
+              // GPS MARKER
+              MarkerLayer(
+                markers: routePoints.isNotEmpty
+                    ? [
+                        Marker(
+                          point: routePoints.last,
+                          width: 16,
+                          height: 16,
+                          child: Container(
+                            decoration: const BoxDecoration(
+                              color: Colors.red,
+                              shape: BoxShape.circle,
+                            ),
+                          ),
+                        ),
+                      ]
+                    : [],
+              ),
             ],
           ),
 
-          // ================= DISTANCE CARD =================
+          // DISTANCE CARD
           Positioned(
             top: 90,
             left: 24,
@@ -176,24 +169,20 @@ class _RunScreenState extends State<RunScreen> {
                   Text(
                     distanceKm.toStringAsFixed(2),
                     style: const TextStyle(
-                      fontSize: 42,
-                      fontWeight: FontWeight.bold,
-                      color: Colors.white,
-                    ),
+                        fontSize: 42,
+                        fontWeight: FontWeight.bold,
+                        color: Colors.white),
                   ),
-                  const Text('km',
-                      style: TextStyle(color: Colors.white70)),
+                  const Text("km", style: TextStyle(color: Colors.white70)),
                   const SizedBox(height: 6),
-                  const Text(
-                    'Distance',
-                    style: TextStyle(color: Colors.white70),
-                  ),
+                  const Text("Distance",
+                      style: TextStyle(color: Colors.white70)),
                 ],
               ),
             ),
           ),
 
-          // ================= INFO BAR =================
+          // INFO BAR
           Positioned(
             bottom: 150,
             left: 24,
@@ -213,20 +202,16 @@ class _RunScreenState extends State<RunScreen> {
                           color: Colors.white, size: 18),
                       const SizedBox(width: 8),
                       Text(
-                        '${minutes.toString().padLeft(2, '0')}:${seconds.toString().padLeft(2, '0')}',
+                        "${minutes.toString().padLeft(2, '0')}:${seconds.toString().padLeft(2, '0')}",
                         style: const TextStyle(color: Colors.white),
                       ),
                     ],
                   ),
-                  Container(
-                    width: 1,
-                    height: 24,
-                    color: Colors.white24,
-                  ),
+                  Container(width: 1, height: 24, color: Colors.white24),
                   Text(
                     distanceKm > 0
-                        ? '${(elapsedSeconds / 60 / distanceKm).toStringAsFixed(2)} /km'
-                        : '-- /km',
+                        ? "${(elapsedSeconds / 60 / distanceKm).toStringAsFixed(2)} /km"
+                        : "-- /km",
                     style: const TextStyle(color: Colors.white),
                   ),
                 ],
@@ -234,7 +219,7 @@ class _RunScreenState extends State<RunScreen> {
             ),
           ),
 
-          // ================= ACTION BUTTONS =================
+          // ACTION BUTTONS
           Positioned(
             bottom: 40,
             left: 24,
@@ -283,4 +268,3 @@ class _RunScreenState extends State<RunScreen> {
     );
   }
 }
-

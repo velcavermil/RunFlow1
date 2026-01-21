@@ -1,7 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:intl/intl.dart';
 
-import '../models/run_model.dart';
 import '../models/user_model.dart';
 import '../models/schedule_model.dart';
 

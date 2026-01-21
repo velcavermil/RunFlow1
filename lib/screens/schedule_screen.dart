@@ -228,7 +228,9 @@ class _ScheduleScreenState extends State<ScheduleScreen> {
                   onPressed: () async {
                     if (selectedDate == null ||
                         selectedTime == null ||
-                        distanceController.text.isEmpty) return;
+                        distanceController.text.isEmpty) {
+                      return;
+                    }
 
                     final dateTime = DateTime(
                       selectedDate!.year,
