@@ -5,7 +5,7 @@
     <uses-feature android:name="android.hardware.location.gps"/>
 
     <application
-        android:label="running_tracker"
+        android:label="RunFlow"
         android:name="${applicationName}"
         android:icon="@mipmap/ic_launcher"
         android:usesCleartextTraffic="true">
